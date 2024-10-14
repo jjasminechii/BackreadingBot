@@ -175,12 +175,33 @@ class ConsistencyChecker:
         for submission in submissions:
             created_at = EdHelper.parse_datetime(submission['created_at'],
                                                  milliseconds=True)
+            if created_at >= due_at + grace_period:
+                if submission['feedback'] is not None and (submission['feedback']['criteria'] != [] or submission['feedback']['content'] != ''):
+                    # return ("Possible late submission graded, please double-check and regrade!", submission['id'])
+                    reason = "Possible late submission graded please double-check and regrade if needed, "
+                    content = EdHelper.parse_content(
+                        submission['feedback']['content']
+                    )
+                    if len(submission['feedback']['criteria']) != num_criteria:
+                        # Didn't fill out all dimensions
+                        reason += "Not all dimensions assigned a grade, "
+                    if not ConsistencyRegex.EMAIL_REGEX.search(content):
+                        # Missing contact info email
+                        reason += "Missing or incorrect TA contact information, "
+                    if template:
+                        # Lets check to see if a template is being used - assuming
+                        # the format is "Dimension: Score"
+                        reason += ConsistencyChecker._check_criteria(
+                            submission['feedback']['criteria'], content
+                        )
+                    if reason != "":
+                        return reason[:-2], submission['id']
             if created_at < due_at + grace_period:
                 if submission['feedback'] is None:
                     # Feedback not given to appropriate submission
                     return ("Missing grade / incorrect submission graded or " +
                             "marked final", submission['id'])
-
+                
                 reason = ""
                 content = EdHelper.parse_content(
                     submission['feedback']['content']
