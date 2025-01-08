@@ -1,6 +1,6 @@
 import os
 from collections import defaultdict
-import datetime
+from datetime import datetime, timedelta
 import re
 import logging
 
@@ -20,7 +20,7 @@ logging.basicConfig(filename=LOGGING_FILE, encoding='utf-8',
                     level=logging.INFO)
 
 
-class ConsistencyConstants:
+class ConsistencyResubConstants:
     FEEDBACK_BOX_REGEX = r'({criteria_name})[a-zA-Z\s]*:\s*_*(\({criteria_mark}\)|{criteria_mark})'  # noqa: E501
     TEMPLATE_REGEX = r'({criteria_name})[a-zA-Z\s\\/]*:'  # noqa: E501
     VIEW_SUBMISSION_LINK = 'https://edstem.org/us/courses/{course_id}/lessons/{lesson_id}/slides/{slide_id}/submissions?u={user_id}&s={submission_id}'  # noqa: E501
@@ -28,11 +28,13 @@ class ConsistencyConstants:
     VIEW_ATTEMPT_LINK = 'https://edstem.org/us/courses/{course_id}/lessons/{lesson_id}/attempts?slide={slide_id}&email={email}'  # noqa: E501
 
 
-class ConsistencyRegex:
+class ConsistencyResubRegex:
     EMAIL_REGEX = re.compile(r'[A-Za-z0-9]+(@|%40)(uw|cs.washington).edu')  # noqa: E501
+    SUMMARY_FEEDBACK_REGEX = re.compile(
+        r'(?=.*\bSummary\b.*)(?=.*\badditional\b.*)(?=.*\bfeedback\b.*)', re.IGNORECASE | re.DOTALL)
 
 
-class ConsistencyChecker:
+class ConsistencyResubChecker:
     @staticmethod
     def _count_ungraded(
         users: List[Dict],
@@ -92,7 +94,7 @@ class ConsistencyChecker:
                  students not present in the given spreadsheet, and the total
                  number of ungraded students
         """
-        url = ConsistencyRegex.EMAIL_REGEX.sub('', url)
+        url = ConsistencyResubRegex.EMAIL_REGEX.sub('', url)
         attempt_slide = EdHelper.is_overall_submission_link(url)
 
         users = None
@@ -116,7 +118,7 @@ class ConsistencyChecker:
                 users.append(ed_helper.get_attempt_user(attempts[i], lesson_id,
                                                         slide_id, rubric))
 
-        return ConsistencyChecker._count_ungraded(users, spreadsheet)
+        return ConsistencyResubChecker._count_ungraded(users, spreadsheet)
 
     @staticmethod
     def _check_criteria(
@@ -137,18 +139,18 @@ class ConsistencyChecker:
             elif "Concept" in criteria['name']:
                 criteria['name'] = "Concepts{0,1}"
 
-            if not re.compile(ConsistencyConstants.FEEDBACK_BOX_REGEX.format(
+            if not re.compile(ConsistencyResubConstants.FEEDBACK_BOX_REGEX.format(
                 criteria_name=criteria['name'], criteria_mark=criteria['mark']
             )).search(content):
                 # Feedback not properly templated
-                if not re.compile(ConsistencyConstants.TEMPLATE_REGEX.format(
+                if not re.compile(ConsistencyResubConstants.TEMPLATE_REGEX.format(
                     criteria_name=criteria['name'])
                 ).search(content):
                     if criteria['mark'] != "E":
-                        return ConsistencyChecker.format_result("Template not used, ")
+                        return "Template not used, "
                 else:
                     # Template was used, but the mark doesn't match
-                    return ConsistencyChecker.format_result("Assigned grade doesn't match feedback box, ")
+                    return "Assigned grade doesn't match feedback box, "
         return ""
 
     @staticmethod
@@ -171,27 +173,35 @@ class ConsistencyChecker:
         Returns: Any grading fixes that need to be made and the id of the
                  submission. None, None if there are no issues
         """
-        grace_period = datetime.timedelta(minutes=ASSIGNMENT_GRACE_MINUTES)
         for submission in submissions:
             created_at = EdHelper.parse_datetime(submission['created_at'],
                                                  milliseconds=True)
-            # jachi: Check if a late submission was graded by TA
-            if created_at >= due_at + grace_period:
+            # jachi: This is a temporary hack to check for late resubmissions that were graded by a TA.
+            # It should be refactored to be more general and not hard-coded later!
+            # For now, each week, just change the current date to the due date of the assignment to whenever the resubmission was due.
+            # And yes, the time below is 12:15 with our 15 minute grace period! It looks weird with 19 because of the timezone conversion.
+            RESUB_DUE = datetime.fromisoformat("2024-12-13 19:15:00+11:00")
+            if created_at >= RESUB_DUE:
                 if submission['feedback'] is not None and (submission['feedback']['criteria'] != [] or submission['feedback']['content'] != ''):
                     reason = "Possible late submission graded, "
                     content = EdHelper.parse_content(
                         submission['feedback']['content']
                     )
                     if len(submission['feedback']['criteria']) != num_criteria:
-                        # Didn't fill out all dimensions
-                        reason += "Not all dimensions assigned a grade, "
-                    if not ConsistencyRegex.EMAIL_REGEX.search(content):
+                        # if ConsistencyResubRegex.SUMMARY_FEEDBACK_REGEX.search(content):
+                        #     reason += "Re-resub, " # To count how many re-resubs there were!
+
+                        # This is a check that factors out the re-resubs given out. Since re-resubs aren't
+                        # assigned any grades, we don't want to output any of them since the output gets very noisy then.
+                        if not ConsistencyResubRegex.SUMMARY_FEEDBACK_REGEX.search(content):
+                            reason += "Not all dimensions assigned a grade, "
+                    if not ConsistencyResubRegex.EMAIL_REGEX.search(content):
                         # Missing contact info email
                         reason += "Missing or incorrect TA contact information, "
                     if template:
                         # Lets check to see if a template is being used - assuming
                         # the format is "Dimension: Score"
-                        reason += ConsistencyChecker._check_criteria(
+                        reason += ConsistencyResubChecker._check_criteria(
                             submission['feedback']['criteria'], content
                         )
                     if reason != "":
@@ -207,15 +217,20 @@ class ConsistencyChecker:
                     submission['feedback']['content']
                 )
                 if len(submission['feedback']['criteria']) != num_criteria:
-                    # Didn't fill out all dimensions
-                    reason += "Not all dimensions assigned a grade, "
-                if not ConsistencyRegex.EMAIL_REGEX.search(content):
+                    # if ConsistencyResubRegex.SUMMARY_FEEDBACK_REGEX.search(content):
+                    #     reason += "Re-resub, "
+
+                    # This is a check that factors out the re-resubs given out. Since re-resubs aren't
+                    # assigned any grades, we don't want to output any of them since the output gets very noisy then.
+                    if not ConsistencyResubRegex.SUMMARY_FEEDBACK_REGEX.search(content):
+                        reason += "Not all dimensions assigned a grade, "
+                if not ConsistencyResubRegex.EMAIL_REGEX.search(content):
                     # Missing contact info email
                     reason += "Missing TA contact information, "
                 if template:
                     # Lets check to see if a template is being used - assuming
                     # the format is "Dimension: Score"
-                    reason += ConsistencyChecker._check_criteria(
+                    reason += ConsistencyResubChecker._check_criteria(
                         submission['feedback']['criteria'], content
                     )
                 if reason != "":
@@ -246,17 +261,17 @@ class ConsistencyChecker:
         Returns: A properly formatted Ed assignment URL
         """
         if not attempt_slide:
-            return ConsistencyConstants.VIEW_SUBMISSION_LINK.format(
+            return ConsistencyResubConstants.VIEW_SUBMISSION_LINK.format(
                 course_id=ids[0], lesson_id=ids[1], slide_id=ids[2],
                 user_id=user_id, submission_id=submission_id
             )
         elif ferpa:
-            return ConsistencyConstants.FERPA_VIEW_ATTEMPT_LINK.format(
+            return ConsistencyResubConstants.FERPA_VIEW_ATTEMPT_LINK.format(
                 course_id=ids[0], lesson_id=ids[1], slide_id=ids[2],
                 submission_id=EdHelper.convert_sid(submission_id)
             )
         else:
-            return ConsistencyConstants.VIEW_ATTEMPT_LINK.format(
+            return ConsistencyResubConstants.VIEW_ATTEMPT_LINK.format(
                 course_id=ids[0], lesson_id=ids[1], slide_id=ids[2],
                 email=email
             )
@@ -326,7 +341,7 @@ class ConsistencyChecker:
         for (user_id, email, section, submission_id) in users:
             if spreadsheet and str(user_id) not in spreadsheet:
                 # This student isn't present in the grading spreadsheet, skip
-                not_present.append(ConsistencyChecker._get_link(
+                not_present.append(ConsistencyResubChecker._get_link(
                     ids, user_id, email, submission_id, attempt_slide, ferpa
                 ))
                 continue
@@ -348,12 +363,12 @@ class ConsistencyChecker:
                 continue
 
             submission_fixes, submission_id = (
-                ConsistencyChecker._find_submission_fixes(
+                ConsistencyResubChecker._find_submission_fixes(
                     submissions, num_criteria, due_at, template
                 )
             )
             if submission_fixes:
-                link = ConsistencyChecker._get_link(
+                link = ConsistencyResubChecker._get_link(
                     ids, user_id, email, submission_id, attempt_slide, ferpa
                 )
 
@@ -412,10 +427,10 @@ class ConsistencyChecker:
                  the total number of issues found
         """
         # Remove email since it mseese with ID regex
-        url = ConsistencyRegex.EMAIL_REGEX.sub('', url)
+        url = ConsistencyResubRegex.EMAIL_REGEX.sub('', url)
 
         fixes, not_present = (
-            await ConsistencyChecker._find_fixes(
+            await ConsistencyResubChecker._find_fixes(
                 ed_helper, url, template, spreadsheet,
                 progress_bar_update, ferpa
             )
@@ -424,7 +439,7 @@ class ConsistencyChecker:
             await progress_bar_update(1, 1)
 
         # Write the info into files to be sent
-        data = ConsistencyChecker._convert_fixes_to_list(fixes)
+        data = ConsistencyResubChecker._convert_fixes_to_list(fixes)
         total_issues = len(data)
 
         file_path = os.path.join(TEMP_DIR, file_name)

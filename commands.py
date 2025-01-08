@@ -6,6 +6,7 @@ import datetime
 
 from src.ed_helper import EdHelper
 from src.consistency_checker import ConsistencyChecker
+from src.consistency_resub_checker import ConsistencyResubChecker
 from src.utils import (
     progress_bar, invert_csv
 )
@@ -14,7 +15,7 @@ from src.exceptions import (
 )
 from src.constants import TEMP_DIR
 
-CHOICES = ['consistency', 'ungraded', 'check_feedback_boxes']
+CHOICES = ['consistency', 'consistency_resub', 'ungraded', 'check_feedback_boxes']
 PROGRESS_INCREMENT = 50
 
 
@@ -117,6 +118,56 @@ async def consistency(args):
     print("Result files can be found at:" +
           f"\n\t{file_name}.csv\n\t{file_name}.html\n")
 
+async def consistency_resub(args):
+    if args.ed_token is None:
+        raise MissingArgument("Ed token required to run grading checks")
+    if args.assignment_link is None:
+        raise MissingArgument("Assignment link required to run grading checks")
+    if not EdHelper.valid_token(args.ed_token):
+        raise InvalidArgument("Ed token is invalid")
+    if not EdHelper.valid_assignment_url(args.assignment_link):
+        raise InvalidArgument("Assignment link is invalid")
+
+    spreadsheet = None
+    if args.scrubbed_spreadsheet is not None:
+        spreadsheet = invert_csv(open(args.scrubbed_spreadsheet).read())
+
+    ed_helper = EdHelper(args.ed_token)
+    file_name = os.path.join(TEMP_DIR, f'user-{datetime.datetime.now()}')
+
+    print("\nRunning consistency checker:")
+    print(progress_bar(0, 1), end='\r', flush=True)
+
+    async def update_progress(curr, total):
+        print(progress_bar(curr, total), end='\n' if curr == total
+              else '\r', flush=True)
+
+    fixes, not_present, total_issues = (
+        await ConsistencyResubChecker.check_consistency(
+            ed_helper, args.assignment_link, file_name, args.template,
+            spreadsheet, update_progress, args.ferpa
+        )
+    )
+
+    print()
+    print("All clear!" if total_issues == 0 else
+          f"{total_issues} students with consistency issues")
+    if total_issues > 0:
+        print("Found Issues:")
+        for ta, issues in fixes.items():
+            print(f"\t{'TA' if spreadsheet is not None else 'Section'}: " +
+                  f"{ta}, Issues: {len(issues)}")
+            for issue in issues:
+                print(f"\t\t{issue}")
+    if len(not_present) > 0:
+        print()
+        print("Student submissions not present in grading spreadsheet: "
+              f"({len(not_present)})")
+        for link in not_present:
+            print(f"\t{link}")
+    print()
+    print("Result files can be found at:" +
+          f"\n\t{file_name}.csv\n\t{file_name}.html\n")
 
 async def ungraded(args):
     if args.ed_token is None:

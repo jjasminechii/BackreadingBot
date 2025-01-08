@@ -311,7 +311,12 @@ class EdHelper:
 
         all_criteria = []
         ed_quiz_responses = self.get_quiz_responses(final_id, slide_id)
-        mark = self.get_attempt_mark(ed_quiz_responses[0]['lesson_mark']['id'])
+        if ed_quiz_responses and ed_quiz_responses[0]:
+            mark = self.get_attempt_mark(ed_quiz_responses[0]['lesson_mark']['id'])
+        else:
+           # jachi: For manually finding students who are missing the final grade slide.
+           # This shouldn't happen but it's good to check :)
+           print(user_id)
 
         selected_rubric_items = (mark['selected_rubric_items']
                                  if 'selected_rubric_items' in mark else
