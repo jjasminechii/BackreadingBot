@@ -8,8 +8,8 @@ setup(
     version='1.0',
     packages=find_packages(),
     install_requires=requirements,
-    author='Joe Spaniac',
-    author_email='jspaniac@yahoo.com',
+    author='Jasmine Chi',
+    author_email='jachi@uw.edu',
     description='This script library allows CSE 12x/14x TAs perform various ' +
                 'grading assistance checks',
     url='https://github.com/jspaniac/BackreadingBot',
